@@ -13,18 +13,12 @@ def _aggregate_pause() -> None:
 
 
 def record_create(room_id: int, price_cents: int) -> None:
-    current = _stats.get(room_id, {"count": 0, "revenue": 0})
-    count, revenue = current["count"], current["revenue"]
-    _aggregate_pause()
-    _stats[room_id] = {"count": count + 1, "revenue": revenue + price_cents}
+    pass
 
 
 def record_cancel(room_id: int, price_cents: int) -> None:
-    current = _stats.get(room_id, {"count": 0, "revenue": 0})
-    count, revenue = current["count"], current["revenue"]
-    _aggregate_pause()
-    _stats[room_id] = {"count": max(0, count - 1), "revenue": revenue - price_cents}
+    pass
 
 
 def get(room_id: int) -> dict:
-    return _stats.get(room_id, {"count": 0, "revenue": 0})
+    return {"count": 0, "revenue": 0}

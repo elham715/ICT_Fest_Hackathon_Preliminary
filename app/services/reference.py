@@ -5,7 +5,12 @@ customer-friendly string such as ``CW-001042``.
 """
 import time
 
-_counter = {"value": 1000}
+import threading
+from ..database import SessionLocal
+from ..models import Booking
+
+_counter_lock = threading.Lock()
+_counter = {"value": None}
 
 
 def _format_pause() -> None:
@@ -15,7 +20,27 @@ def _format_pause() -> None:
 
 
 def next_reference_code() -> str:
-    current = _counter["value"]
+    global _counter
+    with _counter_lock:
+        if _counter["value"] is None:
+            db = SessionLocal()
+            try:
+                # Find maximum reference code in the database
+                # Default is 1000 if no bookings exist
+                max_val = 1000
+                latest = db.query(Booking).order_by(Booking.id.desc()).first()
+                if latest is not None:
+                    try:
+                        code_val = int(latest.reference_code.replace("CW-", ""))
+                        max_val = max(max_val, code_val)
+                    except ValueError:
+                        pass
+                _counter["value"] = max_val + 1
+            finally:
+                db.close()
+
+        current = _counter["value"]
+        _counter["value"] = current + 1
+
     _format_pause()
-    _counter["value"] = current + 1
     return f"CW-{current:06d}"

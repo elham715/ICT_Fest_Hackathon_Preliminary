@@ -1,9 +1,10 @@
 """Booking creation, listing, detail and cancellation."""
+import math
 import threading
-import time
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import cache
@@ -25,21 +26,6 @@ MIN_DURATION_HOURS = 1
 MAX_DURATION_HOURS = 8
 QUOTA_LIMIT = 3
 QUOTA_WINDOW_HOURS = 24
-
-
-def _pricing_warmup() -> None:
-    # Warm the rate/pricing lookup used while checking for slot conflicts.
-    time.sleep(0.12)
-
-
-def _quota_audit() -> None:
-    # Record the quota check against the member's rolling window.
-    time.sleep(0.1)
-
-
-def _settlement_pause() -> None:
-    # Give the refund settlement a moment to register before finalizing.
-    time.sleep(0.12)
 
 
 def _has_conflict(db: Session, room_id: int, start: datetime, end: datetime) -> bool:
@@ -72,6 +58,11 @@ def _check_quota(db: Session, user_id: int, now: datetime, start: datetime) -> N
         raise AppError(409, "QUOTA_EXCEEDED", "Booking quota exceeded")
 
 
+def _calc_refund(price_cents: int, refund_percent: int) -> int:
+    """Half-cents round up (ROUND_HALF_UP)."""
+    return math.floor(price_cents * refund_percent / 100 + 0.5)
+
+
 @router.post("/bookings", status_code=201)
 def create_booking(
     payload: BookingCreateRequest,
@@ -98,20 +89,18 @@ def create_booking(
     if room is None:
         raise AppError(404, "ROOM_NOT_FOUND", "Room not found")
 
-    # Generate sequential reference code outside the booking lock
-    ref_code = reference.next_reference_code()
-
-    # Pre-lock Warmups
-    _pricing_warmup()
-    if user.role == "member":
-        _quota_audit()
-
     with booking_write_lock:
+        # Refresh snapshot so concurrent committed rows are visible
+        db.expire_all()
+
         if _has_conflict(db, room.id, start, end):
             raise AppError(409, "ROOM_CONFLICT", "Room already booked for this interval")
 
         if user.role == "member":
             _check_quota(db, user.id, now, start)
+
+        # Generate reference code inside the lock for uniqueness
+        ref_code = reference.next_reference_code()
 
         price_cents = room.hourly_rate_cents * duration_hours
         booking = Booking(
@@ -125,7 +114,11 @@ def create_booking(
             created_at=now,
         )
         db.add(booking)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise AppError(409, "ROOM_CONFLICT", "Room already booked for this interval")
         db.refresh(booking)
 
     # Invalidate caches immediately
@@ -212,35 +205,42 @@ def cancel_booking(
     if booking.status == "cancelled":
         raise AppError(409, "ALREADY_CANCELLED", "Booking already cancelled")
 
-    now = datetime.utcnow()
-    notice = booking.start_time - now
-    if notice >= timedelta(hours=48):
-        refund_percent = 100
-    elif notice >= timedelta(hours=24):
-        refund_percent = 50
-    else:
-        refund_percent = 0
-
-    refund_amount_cents = int(booking.price_cents * (refund_percent / 100.0) + 0.5)
-
     with booking_write_lock:
+        # Re-read booking state inside the lock for concurrent cancel safety
+        db.expire(booking)
         db.refresh(booking)
         if booking.status == "cancelled":
             raise AppError(409, "ALREADY_CANCELLED", "Booking already cancelled")
 
-        log_refund(db, booking, refund_percent, refund_amount_cents)
+        now = datetime.utcnow()
+        notice = booking.start_time - now
+        if notice >= timedelta(hours=48):
+            refund_percent = 100
+        elif notice >= timedelta(hours=24):
+            refund_percent = 50
+        else:
+            refund_percent = 0
+
+        # Calculate refund with half-up rounding
+        refund_amount_cents = _calc_refund(booking.price_cents, refund_percent)
+
+        refund_log = log_refund(db, booking, refund_percent, refund_amount_cents)
         booking.status = "cancelled"
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise AppError(409, "ALREADY_CANCELLED", "Booking already cancelled")
+
+    room_id = booking.room_id
+    start_date = booking.start_time.date().isoformat()
 
     # Clear caches immediately
     cache.invalidate_report(user.org_id)
-    cache.invalidate_availability(booking.room_id, booking.start_time.date().isoformat())
-
-    # Trigger slow settlement pause outside the write lock
-    _settlement_pause()
+    cache.invalidate_availability(room_id, start_date)
 
     # Stats cancel track & notification
-    stats.record_cancel(booking.room_id, booking.price_cents)
+    stats.record_cancel(room_id, booking.price_cents)
     notifications.notify_cancelled(booking)
 
     return {

@@ -2,6 +2,7 @@
 from datetime import datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import cache
@@ -107,9 +108,16 @@ def room_stats(
     user: User = Depends(get_current_user),
 ):
     room = _get_org_room(db, room_id, user.org_id)
-    current = stats.get(room.id)
+    row = (
+        db.query(
+            func.count(Booking.id).label("count"),
+            func.coalesce(func.sum(Booking.price_cents), 0).label("revenue"),
+        )
+        .filter(Booking.room_id == room.id, Booking.status == "confirmed")
+        .one()
+    )
     return {
         "room_id": room.id,
-        "total_confirmed_bookings": current["count"],
-        "total_revenue_cents": current["revenue"],
+        "total_confirmed_bookings": row.count,
+        "total_revenue_cents": row.revenue,
     }
