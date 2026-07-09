@@ -5,6 +5,7 @@ import jwt
 
 from app.main import app
 from app.auth import _revoked_tokens, _revoked_refresh_tokens, JWT_SECRET, JWT_ALGORITHM
+from app.services.ratelimit import _buckets
 from app.database import Base, engine, SessionLocal
 from app.models import Booking, Room, User, Organization, RefundLog
 
@@ -18,6 +19,7 @@ def clean_db():
     Base.metadata.create_all(bind=engine)
     _revoked_tokens.clear()
     _revoked_refresh_tokens.clear()
+    _buckets.clear()
     yield
 
 
@@ -286,3 +288,125 @@ def test_admin_export_cross_org_leakage():
     resp = client.get(f"/admin/export?include_all=true&room_id={roomA_id}", headers=headersB)
     assert resp.status_code == 404
     assert resp.json()["code"] == "ROOM_NOT_FOUND"
+
+
+def test_rate_limiting_enforcement():
+    org = "acme"
+    client.post("/auth/register", json={"org_name": org, "username": "limit_user", "password": "password"})
+    login = client.post("/auth/login", json={"org_name": org, "username": "limit_user", "password": "password"}).json()
+    headers = {"Authorization": f"Bearer {login['access_token']}"}
+    
+    start = _future(10)
+    end = _future(11)
+    # Fire 20 requests (valid parameters so they pass Pydantic schema validation)
+    for i in range(20):
+        client.post("/bookings", json={"room_id": 99999, "start_time": start, "end_time": end}, headers=headers)
+    
+    # 21st request must be rate limited
+    resp = client.post("/bookings", json={"room_id": 99999, "start_time": start, "end_time": end}, headers=headers)
+    assert resp.status_code == 429
+    assert resp.json()["code"] == "RATE_LIMITED"
+
+
+def test_refund_notice_tiers_and_rounding():
+    org = "acme"
+    client.post("/auth/register", json={"org_name": org, "username": "refund_user", "password": "password"})
+    login = client.post("/auth/login", json={"org_name": org, "username": "refund_user", "password": "password"}).json()
+    headers = {"Authorization": f"Bearer {login['access_token']}"}
+    
+    # Create room with rate 1001 cents
+    room = client.post("/rooms", json={"name": "Room 1", "capacity": 5, "hourly_rate_cents": 1001}, headers=headers).json()
+    room_id = room["id"]
+    
+    # Booking starting 30 hours from now (notice 30 hours -> 50% refund)
+    start_str = _future(30)
+    end_str = _future(31)
+    b_resp = client.post("/bookings", json={"room_id": room_id, "start_time": start_str, "end_time": end_str}, headers=headers).json()
+    b_id = b_resp["id"]
+    
+    # Cancel it
+    c_resp = client.post(f"/bookings/{b_id}/cancel", headers=headers)
+    assert c_resp.status_code == 200
+    c_data = c_resp.json()
+    assert c_data["refund_percent"] == 50
+    assert c_data["refund_amount_cents"] == 501  # round half-up: 500.5 -> 501
+    
+    # Retrieve and verify Refunds sub-object matches
+    g_resp = client.get(f"/bookings/{b_id}", headers=headers).json()
+    assert len(g_resp["refunds"]) == 1
+    assert g_resp["refunds"][0]["amount_cents"] == 501
+
+
+def test_cache_invalidation_flow():
+    org = "acme"
+    client.post("/auth/register", json={"org_name": org, "username": "cache_user", "password": "password"})
+    login = client.post("/auth/login", json={"org_name": org, "username": "cache_user", "password": "password"}).json()
+    headers = {"Authorization": f"Bearer {login['access_token']}"}
+    
+    room = client.post("/rooms", json={"name": "Room A", "capacity": 5, "hourly_rate_cents": 1000}, headers=headers).json()
+    room_id = room["id"]
+    
+    # 1. Fetch usage report (populates cache)
+    today_str = datetime.utcnow().date().isoformat()
+    tomorrow_str = (datetime.utcnow() + timedelta(days=2)).date().isoformat()
+    rep1 = client.get(f"/admin/usage-report?from={today_str}&to={tomorrow_str}", headers=headers).json()
+    assert len(rep1["rooms"]) > 0
+    room_row_1 = next(r for r in rep1["rooms"] if r["room_id"] == room_id)
+    assert room_row_1["confirmed_bookings"] == 0
+    
+    # 2. Create booking (should invalidate report cache)
+    start_str = _future(10)
+    end_str = _future(11)
+    b_resp = client.post("/bookings", json={"room_id": room_id, "start_time": start_str, "end_time": end_str}, headers=headers).json()
+    b_id = b_resp["id"]
+    
+    # 3. Fetch report again (must show 1 booking immediately, not cached 0)
+    rep2 = client.get(f"/admin/usage-report?from={today_str}&to={tomorrow_str}", headers=headers).json()
+    room_row_2 = next(r for r in rep2["rooms"] if r["room_id"] == room_id)
+    assert room_row_2["confirmed_bookings"] == 1
+    
+    # 4. Fetch availability (populates cache)
+    avail_date = datetime.fromisoformat(start_str).date().isoformat()
+    av1 = client.get(f"/rooms/{room_id}/availability?date={avail_date}", headers=headers).json()
+    assert len(av1["busy"]) == 1
+    
+    # 5. Cancel booking (should invalidate availability cache)
+    client.post(f"/bookings/{b_id}/cancel", headers=headers)
+    
+    # 6. Fetch availability again (must show 0 busy intervals immediately)
+    av2 = client.get(f"/rooms/{room_id}/availability?date={avail_date}", headers=headers).json()
+    assert len(av2["busy"]) == 0
+
+
+def test_dynamic_room_stats():
+    org = "acme"
+    client.post("/auth/register", json={"org_name": org, "username": "stats_user", "password": "password"})
+    login = client.post("/auth/login", json={"org_name": org, "username": "stats_user", "password": "password"}).json()
+    headers = {"Authorization": f"Bearer {login['access_token']}"}
+    
+    room = client.post("/rooms", json={"name": "Room A", "capacity": 5, "hourly_rate_cents": 1000}, headers=headers).json()
+    room_id = room["id"]
+    
+    # Stats initially 0
+    st1 = client.get(f"/rooms/{room_id}/stats", headers=headers).json()
+    assert st1["total_confirmed_bookings"] == 0
+    assert st1["total_revenue_cents"] == 0
+    
+    # Create booking
+    start_str = _future(10)
+    end_str = _future(12) # 2 hours -> 2000 cents
+    b_resp = client.post("/bookings", json={"room_id": room_id, "start_time": start_str, "end_time": end_str}, headers=headers).json()
+    b_id = b_resp["id"]
+    
+    # Stats updated
+    st2 = client.get(f"/rooms/{room_id}/stats", headers=headers).json()
+    assert st2["total_confirmed_bookings"] == 1
+    assert st2["total_revenue_cents"] == 2000
+    
+    # Cancel booking
+    client.post(f"/bookings/{b_id}/cancel", headers=headers)
+    
+    # Stats decremented
+    st3 = client.get(f"/rooms/{room_id}/stats", headers=headers).json()
+    assert st3["total_confirmed_bookings"] == 0
+    assert st3["total_revenue_cents"] == 0

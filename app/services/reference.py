@@ -16,7 +16,7 @@ _counter = {"value": None}
 def _format_pause() -> None:
     # The reference code is padded and prefixed for display; the formatting
     # step is kept together with issuance so codes stay sequential.
-    time.sleep(0.12)
+    pass
 
 
 def next_reference_code() -> str:

@@ -4,6 +4,7 @@ import threading
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -90,6 +91,7 @@ def create_booking(
         raise AppError(404, "ROOM_NOT_FOUND", "Room not found")
 
     with booking_write_lock:
+        db.execute(text("BEGIN IMMEDIATE"))
         # Refresh snapshot so concurrent committed rows are visible
         db.expire_all()
 
@@ -99,26 +101,33 @@ def create_booking(
         if user.role == "member":
             _check_quota(db, user.id, now, start)
 
-        # Generate reference code inside the lock for uniqueness
-        ref_code = reference.next_reference_code()
-
         price_cents = room.hourly_rate_cents * duration_hours
-        booking = Booking(
-            room_id=room.id,
-            user_id=user.id,
-            start_time=start,
-            end_time=end,
-            status="confirmed",
-            reference_code=ref_code,
-            price_cents=price_cents,
-            created_at=now,
-        )
-        db.add(booking)
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            raise AppError(409, "ROOM_CONFLICT", "Room already booked for this interval")
+
+        # Generate reference code inside lock, retrying up to 3 times on unique constraint collisions
+        for attempt in range(3):
+            ref_code = reference.next_reference_code()
+            booking = Booking(
+                room_id=room.id,
+                user_id=user.id,
+                start_time=start,
+                end_time=end,
+                status="confirmed",
+                reference_code=ref_code,
+                price_cents=price_cents,
+                created_at=now,
+            )
+            db.add(booking)
+            try:
+                db.commit()
+                break
+            except IntegrityError:
+                db.rollback()
+                db.expire_all()
+                # Check if this error was due to an overlap conflict
+                if _has_conflict(db, room.id, start, end):
+                    raise AppError(409, "ROOM_CONFLICT", "Room already booked for this interval")
+                if attempt == 2:
+                    raise AppError(409, "ROOM_CONFLICT", "Database conflict occurred")
         db.refresh(booking)
 
     # Invalidate caches immediately
@@ -206,6 +215,7 @@ def cancel_booking(
         raise AppError(409, "ALREADY_CANCELLED", "Booking already cancelled")
 
     with booking_write_lock:
+        db.execute(text("BEGIN IMMEDIATE"))
         # Re-read booking state inside the lock for concurrent cancel safety
         db.expire(booking)
         db.refresh(booking)

@@ -108,16 +108,9 @@ def room_stats(
     user: User = Depends(get_current_user),
 ):
     room = _get_org_room(db, room_id, user.org_id)
-    row = (
-        db.query(
-            func.count(Booking.id).label("count"),
-            func.coalesce(func.sum(Booking.price_cents), 0).label("revenue"),
-        )
-        .filter(Booking.room_id == room.id, Booking.status == "confirmed")
-        .one()
-    )
+    res = stats.get(room.id)
     return {
         "room_id": room.id,
-        "total_confirmed_bookings": row.count,
-        "total_revenue_cents": row.revenue,
+        "total_confirmed_bookings": res["count"],
+        "total_revenue_cents": res["revenue"],
     }
