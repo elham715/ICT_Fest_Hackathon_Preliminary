@@ -24,6 +24,8 @@ The grader is black-box. It will call the API and compare behavior against the c
 5. Record the bug, location, fix, and verification in `bug report.md`.
 6. Commit only the related files.
 
+For implementation work, read the lane's `guide.md`, `issues.md`, and `fix_script.md` before editing code.
+
 ## Collaboration Channels
 
 Use the `Bug_fix/` files as work lanes. Each AI agent or human collaborator should claim one lane at a time:

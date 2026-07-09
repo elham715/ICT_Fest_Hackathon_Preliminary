@@ -31,3 +31,9 @@ Each lane folder should contain:
 
 - `guide.md` - instructions for finding that class of bugs.
 - `issues.md` - findings from code inspection and AI agent review.
+- `fix_script.md` - implementation sequence for fixing that lane safely.
+
+## Shared Planning Files
+
+- `FIX_PLAN.md` - recommended global fix order.
+- `SANITY_CHECK.md` - current confidence level and competition-readiness notes.
