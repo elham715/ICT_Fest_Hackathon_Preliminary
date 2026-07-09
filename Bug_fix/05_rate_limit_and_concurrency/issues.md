@@ -2,13 +2,18 @@
 
 ## 1. Rate Limiter Loses Concurrent Requests
 
+**Rating:** Hard, valid.
+
 **Files/lines:**
 
 - `app/services/ratelimit.py:18`
+- `app/services/ratelimit.py:22`
 
 **Expected:** `POST /bookings` allows at most 20 requests per rolling 60 seconds per user; all attempts count.
 
 **Likely bug:** `_buckets` is a global dict with no lock. Concurrent calls can read the same bucket and overwrite each other, undercounting bursts.
+
+**Reason this is valid:** The rate-limit contract explicitly says it must hold under concurrent requests. The artificial sleep between bucket filtering and append widens the race window and makes the read/write race easier to trigger.
 
 **Suggested tests:**
 
@@ -16,6 +21,8 @@
 - Repeat with invalid or conflicting booking requests and assert failed attempts still count.
 
 ## 2. Room Conflict Check Is Check-Then-Insert
+
+**Rating:** Hard, valid.
 
 **Files/lines:**
 
@@ -32,6 +39,8 @@
 
 ## 3. Quota Check Can Be Bypassed Concurrently
 
+**Rating:** Hard, valid.
+
 **Files/lines:**
 
 - `app/routers/bookings.py:55`
@@ -47,6 +56,8 @@
 
 ## 4. Reference Codes Are Not Unique Under Concurrency
 
+**Rating:** Hard, valid.
+
 **Files/lines:**
 
 - `app/services/reference.py:17`
@@ -61,6 +72,8 @@
 - Create many bookings concurrently across different rooms/times and assert all reference codes are unique.
 
 ## 5. Concurrent Cancellation Can Create Multiple Refund Logs
+
+**Rating:** Hard, valid.
 
 **Files/lines:**
 
@@ -78,6 +91,8 @@
 
 ## 6. Stats Side Effects Are Race-Prone
 
+**Rating:** Medium to hard, valid.
+
 **Files/lines:**
 
 - `app/services/stats.py:22`
@@ -91,3 +106,6 @@
 - Run parallel successful creates and compare `/rooms/{id}/stats` to DB-derived confirmed count and revenue.
 - Run parallel cancellations and assert stats decrement only once.
 
+## Cross-Lane Note
+
+Puku also flagged synchronous sleeps in booking creation and notification side effects. Those are strongest when evaluated under the liveness lane because they can delay unrelated endpoints during concurrent valid requests.

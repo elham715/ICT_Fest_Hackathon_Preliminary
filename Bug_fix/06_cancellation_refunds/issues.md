@@ -2,6 +2,8 @@
 
 ## 1. Refund Tier Boundaries Are Wrong
 
+**Rating:** Hard, valid.
+
 **Files/lines:**
 
 - `app/routers/bookings.py:198`
@@ -18,6 +20,8 @@
 
 ## 2. Refund Rounding Violates Half-Up Rule
 
+**Rating:** Hard, valid.
+
 **Files/lines:**
 
 - `app/routers/bookings.py:208`
@@ -32,6 +36,8 @@
 - Booking price `1001`, 50 percent refund, expect response and stored amount `501`.
 
 ## 3. Cancel Response Can Differ From Stored RefundLog
+
+**Rating:** Hard, valid.
 
 **Files/lines:**
 
@@ -49,6 +55,8 @@
 - Assert response `refund_amount_cents == RefundLog.amount_cents`.
 
 ## 4. Concurrent Cancel Can Create Duplicate Refund Logs
+
+**Rating:** Hard, valid.
 
 **Files/lines:**
 
@@ -68,6 +76,8 @@
 
 ## 5. Refund Log Can Commit Without Completed Cancellation
 
+**Rating:** Hard, valid.
+
 **Files/lines:**
 
 - `app/services/refunds.py:24`
@@ -83,3 +93,29 @@
 - Simulate failure after refund logging and before final booking commit.
 - Assert no refund exists unless booking status is cancelled.
 
+## 6. Cancellation Does Not Invalidate Availability Cache
+
+**Rating:** Hard, valid.
+
+**Files/lines:**
+
+- `app/routers/bookings.py:216`
+- `app/routers/bookings.py:217`
+- `app/routers/rooms.py:69`
+- `app/routers/rooms.py:99`
+
+**Expected:** Availability reflects the current confirmed bookings immediately after cancellation.
+
+**Likely bug:** Cancellation invalidates report cache but not availability cache for the cancelled booking's room/date.
+
+**Reason this is valid:** A cancelled booking should disappear from `/rooms/{id}/availability?date=...` immediately. A previously cached busy interval can remain visible.
+
+**Suggested tests:**
+
+- Create a booking and fetch room availability.
+- Cancel the booking.
+- Fetch availability for the same date and assert the interval is gone.
+
+## Rating Notes
+
+- Puku's note about notification order after refund logging was correctly marked as a false alarm for transaction order; the stronger notification issue is lock-order liveness and belongs in `08_reference_codes_and_liveness`.

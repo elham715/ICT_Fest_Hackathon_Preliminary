@@ -46,9 +46,54 @@
 - Refresh again with the original refresh token and expect `401`.
 - Refresh with the newly returned refresh token and expect success.
 
+## 4. Duplicate Registration Returns Existing User
+
+**Rating:** Hard, valid.
+
+**Files/lines:**
+
+- `app/routers/auth.py:32`
+- `app/routers/auth.py:37`
+
+**Expected:** A duplicate username within the same organization returns `409 USERNAME_TAKEN`.
+
+**Likely bug:** The register endpoint returns the existing user's data instead of raising the documented application error.
+
+**Reason this is valid:** The contract explicitly names duplicate same-org username as `409 USERNAME_TAKEN`; returning `201` with an existing user violates both status code and behavior.
+
+**Suggested tests:**
+
+- Register `alice` in org `acme`.
+- Register `alice` again in org `acme` and expect `409 USERNAME_TAKEN`.
+- Register `alice` in a different org and verify that separate-org username behavior is still allowed.
+
+## 5. Malformed Token Subject Can Become A 500
+
+**Rating:** Medium to hard, valid.
+
+**Files/lines:**
+
+- `app/auth.py:106`
+- `app/routers/auth.py:86`
+
+**Expected:** Missing, invalid, expired, or malformed tokens return `401`.
+
+**Likely bug:** `int(payload["sub"])` can raise `KeyError` or `ValueError` for a signed token with missing/non-numeric `sub`, escaping as a server error instead of `401`.
+
+**Reason this is valid:** The grader may generate malformed-but-signed JWTs. The contract requires token failures to be unauthorized responses, not unhandled exceptions.
+
+**Suggested tests:**
+
+- Create a signed access token with `sub = "not-an-int"` and expect protected endpoints to return `401`.
+- Create a signed refresh token with missing `sub` and expect `/auth/refresh` to return `401`.
+
 ## No Issue Found
 
 - Required JWT claims appear present for both token types.
 - Refresh expiry appears to be 7 days.
 - Bad credentials appear to return `401 INVALID_CREDENTIALS`.
 
+## Rating Notes
+
+- Puku's `+00:00` concern does not apply here and is acceptable where used for datetime output.
+- The logout revocation issue is valid, but the practical bug is that logout does not revoke the access token because validation checks `sub` while storage uses `jti`.
