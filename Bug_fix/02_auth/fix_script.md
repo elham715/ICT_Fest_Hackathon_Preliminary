@@ -30,6 +30,9 @@ Make JWT auth, logout, refresh rotation, and registration match the README contr
 5. Harden malformed signed tokens.
    - Missing or non-integer `sub` should return `401`, not `500`.
 
+6. Handle database uniqueness conflict in registration.
+   - Catch SQLAlchemy `IntegrityError` during register commits and raise `409 USERNAME_TAKEN`.
+
 ## Required Tests
 
 - Access token lifetime is exactly 900 seconds.
@@ -38,6 +41,7 @@ Make JWT auth, logout, refresh rotation, and registration match the README contr
 - Newly returned refresh token works.
 - Duplicate username in same org returns `409 USERNAME_TAKEN`.
 - Malformed signed token subject returns `401`.
+- Concurrent registration of the same username returns `409 USERNAME_TAKEN` for the losing request.
 
 ## Acceptance
 

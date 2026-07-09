@@ -87,6 +87,24 @@
 - Create a signed access token with `sub = "not-an-int"` and expect protected endpoints to return `401`.
 - Create a signed refresh token with missing `sub` and expect `/auth/refresh` to return `401`.
 
+## 6. Concurrent Registration Can Raise a 500 Server Error
+
+**Rating:** Hard, valid.
+
+**Files/lines:**
+
+- `app/routers/auth.py:51-53`
+- `app/models.py:26`
+
+**Expected:** Concurrent registration requests for the same username within the same organization return `409 USERNAME_TAKEN`.
+
+**Likely bug:** The endpoint checks for existing user first and then creates the user. Under concurrent requests, both may pass the check, and one will trigger a database `IntegrityError` on the `uq_user_org_username` unique constraint, causing a 500 error instead of a 409.
+
+**Suggested tests:**
+
+- Send two duplicate registration requests in parallel.
+- Assert one returns `201` (or `200` if previously registered) and the other returns `409 USERNAME_TAKEN`.
+
 ## No Issue Found
 
 - Required JWT claims appear present for both token types.
