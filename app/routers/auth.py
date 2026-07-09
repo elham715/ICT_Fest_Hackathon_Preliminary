@@ -1,5 +1,6 @@
 """Authentication endpoints: register, login, refresh, logout."""
 from fastapi import APIRouter, Depends
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..auth import (
@@ -8,7 +9,9 @@ from ..auth import (
     decode_token,
     get_token_payload,
     hash_password,
+    is_refresh_token_revoked,
     revoke_access_token,
+    revoke_refresh_token,
     verify_password,
 )
 from ..database import get_db
@@ -24,10 +27,17 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     org = db.query(Organization).filter(Organization.name == payload.org_name).first()
     role = "admin" if org is None else "member"
     if org is None:
-        org = Organization(name=payload.org_name)
-        db.add(org)
-        db.commit()
-        db.refresh(org)
+        try:
+            org = Organization(name=payload.org_name)
+            db.add(org)
+            db.commit()
+            db.refresh(org)
+        except IntegrityError:
+            db.rollback()
+            org = db.query(Organization).filter(Organization.name == payload.org_name).first()
+            if org is None:
+                raise AppError(500, "DATABASE_ERROR", "Could not create or find organization")
+            role = "member"
 
     existing = (
         db.query(User)
@@ -35,22 +45,22 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         .first()
     )
     if existing is not None:
-        return {
-            "user_id": existing.id,
-            "org_id": org.id,
-            "username": existing.username,
-            "role": existing.role,
-        }
+        raise AppError(409, "USERNAME_TAKEN", "Username taken")
 
-    user = User(
-        org_id=org.id,
-        username=payload.username,
-        hashed_password=hash_password(payload.password),
-        role=role,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    try:
+        user = User(
+            org_id=org.id,
+            username=payload.username,
+            hashed_password=hash_password(payload.password),
+            role=role,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    except IntegrityError:
+        db.rollback()
+        raise AppError(409, "USERNAME_TAKEN", "Username taken")
+
     return {
         "user_id": user.id,
         "org_id": org.id,
@@ -83,7 +93,17 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
     data = decode_token(payload.refresh_token)
     if data.get("type") != "refresh":
         raise AppError(401, "UNAUTHORIZED", "Wrong token type")
-    user = db.query(User).filter(User.id == int(data["sub"])).first()
+    if is_refresh_token_revoked(data):
+        raise AppError(401, "UNAUTHORIZED", "Token has been revoked")
+
+    revoke_refresh_token(data)
+
+    try:
+        user_id = int(data["sub"])
+    except (KeyError, ValueError):
+        raise AppError(401, "UNAUTHORIZED", "Invalid token subject")
+
+    user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise AppError(401, "UNAUTHORIZED", "Unknown user")
     return {

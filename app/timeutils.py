@@ -1,5 +1,6 @@
-"""Helpers for parsing input datetimes and rendering UTC responses."""
 from datetime import datetime, timezone
+
+from .errors import AppError
 
 
 def parse_input_datetime(value: str) -> datetime:
@@ -8,12 +9,16 @@ def parse_input_datetime(value: str) -> datetime:
     Inputs that carry a UTC offset are normalized to UTC; naive inputs are
     treated as UTC as-is.
     """
-    dt = datetime.fromisoformat(value)
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        raise AppError(400, "INVALID_BOOKING_WINDOW", "Invalid datetime format")
     if dt.tzinfo is not None:
-        dt = dt.replace(tzinfo=None)
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt
 
 
 def iso_utc(dt: datetime) -> str:
     """Render a stored (naive UTC) datetime with an explicit UTC designator."""
     return dt.replace(tzinfo=timezone.utc).isoformat()
+
