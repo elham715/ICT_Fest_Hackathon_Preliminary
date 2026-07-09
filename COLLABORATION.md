@@ -28,14 +28,14 @@ The grader is black-box. It will call the API and compare behavior against the c
 
 Use the `Bug_fix/` files as work lanes. Each AI agent or human collaborator should claim one lane at a time:
 
-- `01_datetime.md`
-- `02_auth.md`
-- `03_multi_tenancy.md`
-- `04_booking_creation.md`
-- `05_rate_limit_and_concurrency.md`
-- `06_cancellation_refunds.md`
-- `07_reports_and_pagination.md`
-- `08_reference_codes_and_liveness.md`
+- `Bug_fix/01_datetime/`
+- `Bug_fix/02_auth/`
+- `Bug_fix/03_multi_tenancy/`
+- `Bug_fix/04_booking_creation/`
+- `Bug_fix/05_rate_limit_and_concurrency/`
+- `Bug_fix/06_cancellation_refunds/`
+- `Bug_fix/07_reports_and_pagination/`
+- `Bug_fix/08_reference_codes_and_liveness/`
 
 ## Handoff Format
 
@@ -56,4 +56,3 @@ A fix is done when:
 - Existing tests pass.
 - New focused tests cover the fixed behavior.
 - `bug report.md` contains the finding if it may matter for tie-breaking.
-

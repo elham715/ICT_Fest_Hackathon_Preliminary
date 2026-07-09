@@ -6,14 +6,14 @@ Each lane starts with bug-finding instructions. Follow the contract in the root 
 
 ## Suggested Order
 
-1. `01_datetime.md`
-2. `02_auth.md`
-3. `03_multi_tenancy.md`
-4. `04_booking_creation.md`
-5. `05_rate_limit_and_concurrency.md`
-6. `06_cancellation_refunds.md`
-7. `07_reports_and_pagination.md`
-8. `08_reference_codes_and_liveness.md`
+1. `01_datetime/guide.md`
+2. `02_auth/guide.md`
+3. `03_multi_tenancy/guide.md`
+4. `04_booking_creation/guide.md`
+5. `05_rate_limit_and_concurrency/guide.md`
+6. `06_cancellation_refunds/guide.md`
+7. `07_reports_and_pagination/guide.md`
+8. `08_reference_codes_and_liveness/guide.md`
 
 ## General Bug-Finding Loop
 
@@ -25,3 +25,9 @@ Each lane starts with bug-finding instructions. Follow the contract in the root 
 6. Run `pytest -q`.
 7. Update `bug report.md`.
 
+## Folder Shape
+
+Each lane folder should contain:
+
+- `guide.md` - instructions for finding that class of bugs.
+- `issues.md` - findings from code inspection and AI agent review.
