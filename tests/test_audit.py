@@ -269,6 +269,15 @@ def test_multi_tenancy_and_booking_visibility():
     assert g_resp2.status_code == 404
     assert g_resp2.json()["code"] == "BOOKING_NOT_FOUND"
 
+    # Org A member creates a booking
+    b_resp3 = client.post("/bookings", json={"room_id": roomA_id, "start_time": _future(12), "end_time": _future(13)}, headers=headers_mA).json()
+    b_id3 = b_resp3["id"]
+
+    # Org A admin (adminA) CAN read Org A member's booking
+    g_resp3 = client.get(f"/bookings/{b_id3}", headers=headersA)
+    assert g_resp3.status_code == 200
+    assert g_resp3.json()["id"] == b_id3
+
 
 def test_admin_export_cross_org_leakage():
     # Org A Setup
@@ -410,3 +419,109 @@ def test_dynamic_room_stats():
     st3 = client.get(f"/rooms/{room_id}/stats", headers=headers).json()
     assert st3["total_confirmed_bookings"] == 0
     assert st3["total_revenue_cents"] == 0
+
+
+def test_malformed_token_subject():
+    import jwt
+    from app.auth import JWT_SECRET, JWT_ALGORITHM
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    token = jwt.encode(
+        {
+            "sub": "non-numeric-sub",
+            "org": 1,
+            "role": "member",
+            "jti": "somejti123",
+            "iat": now_ts,
+            "exp": now_ts + 900,
+            "type": "access",
+        },
+        JWT_SECRET,
+        algorithm=JWT_ALGORITHM,
+    )
+    resp = client.get("/rooms", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+    assert resp.json()["code"] == "UNAUTHORIZED"
+
+
+def test_booking_pagination_ordering_and_limits():
+    org = "acme"
+    client.post("/auth/register", json={"org_name": org, "username": "pag_user", "password": "password"})
+    login = client.post("/auth/login", json={"org_name": org, "username": "pag_user", "password": "password"}).json()
+    headers = {"Authorization": f"Bearer {login['access_token']}"}
+
+    room = client.post("/rooms", json={"name": "Room 1", "capacity": 5, "hourly_rate_cents": 1000}, headers=headers).json()
+    room_id = room["id"]
+
+    # Create 5 bookings starting at different hours in the future
+    # start_times: 10, 11, 12, 13, 14 hours in the future
+    b_ids = []
+    for h in [12, 10, 14, 11, 13]:
+        resp = client.post("/bookings", json={"room_id": room_id, "start_time": _future(h), "end_time": _future(h+1)}, headers=headers).json()
+        b_ids.append(resp["id"])
+
+    # Test limit=2, page=1
+    # Expected ordering: 10h, 11h, 12h, 13h, 14h
+    r1 = client.get("/bookings?page=1&limit=2", headers=headers).json()
+    assert r1["total"] == 5
+    assert len(r1["items"]) == 2
+    
+    # Verify items are sorted ascending
+    start_time_0 = r1["items"][0]["start_time"]
+    start_time_1 = r1["items"][1]["start_time"]
+    assert start_time_0 < start_time_1
+
+    # Test limit=2, page=2 (items 3, 4)
+    r2 = client.get("/bookings?page=2&limit=2", headers=headers).json()
+    assert len(r2["items"]) == 2
+    
+    # Test limit=2, page=3 (item 5)
+    r3 = client.get("/bookings?page=3&limit=2", headers=headers).json()
+    assert len(r3["items"]) == 1
+
+
+def test_concurrent_registration_handling():
+    import concurrent.futures
+    org = "concur_reg_org"
+    
+    # Trigger 5 parallel registrations of the same username in the same org
+    def run_reg():
+        return client.post("/auth/register", json={"org_name": org, "username": "same_user", "password": "password"})
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(run_reg) for _ in range(5)]
+        results = [f.result() for f in futures]
+
+    # Verify that exactly one registration returns 201 (success), and all others return 409 USERNAME_TAKEN
+    success_count = sum(1 for r in results if r.status_code == 201)
+    conflict_count = sum(1 for r in results if r.status_code == 409 and r.json()["code"] == "USERNAME_TAKEN")
+    
+    assert success_count == 1
+    assert conflict_count == 4
+
+
+def test_concurrent_bookings_conflict():
+    import concurrent.futures
+    org = "concur_book_org"
+    client.post("/auth/register", json={"org_name": org, "username": "admin", "password": "password"})
+    login = client.post("/auth/login", json={"org_name": org, "username": "admin", "password": "password"}).json()
+    headers = {"Authorization": f"Bearer {login['access_token']}"}
+
+    room = client.post("/rooms", json={"name": "Room 1", "capacity": 5, "hourly_rate_cents": 1000}, headers=headers).json()
+    room_id = room["id"]
+
+    start = _future(10)
+    end = _future(11)
+
+    # 5 parallel requests booking the exact same room and slot
+    def run_book():
+        return client.post("/bookings", json={"room_id": room_id, "start_time": start, "end_time": end}, headers=headers)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(run_book) for _ in range(5)]
+        results = [f.result() for f in futures]
+
+    success = [r for r in results if r.status_code == 201]
+    conflicts = [r for r in results if r.status_code == 409 and r.json()["code"] == "ROOM_CONFLICT"]
+
+    assert len(success) == 1
+    assert len(conflicts) == 4
