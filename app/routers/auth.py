@@ -6,12 +6,11 @@ from sqlalchemy.orm import Session
 from ..auth import (
     create_access_token,
     create_refresh_token,
+    consume_refresh_token,
     decode_token,
     get_token_payload,
     hash_password,
-    is_refresh_token_revoked,
     revoke_access_token,
-    revoke_refresh_token,
     verify_password,
 )
 from ..database import get_db
@@ -93,10 +92,10 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
     data = decode_token(payload.refresh_token)
     if data.get("type") != "refresh":
         raise AppError(401, "UNAUTHORIZED", "Wrong token type")
-    if is_refresh_token_revoked(data):
+    if not data.get("jti"):
+        raise AppError(401, "UNAUTHORIZED", "Invalid token identifier")
+    if not consume_refresh_token(data):
         raise AppError(401, "UNAUTHORIZED", "Token has been revoked")
-
-    revoke_refresh_token(data)
 
     try:
         user_id = int(data["sub"])

@@ -95,6 +95,19 @@ def revoke_refresh_token(payload: dict) -> None:
         _revoked_refresh_tokens.add(payload["jti"])
 
 
+def consume_refresh_token(payload: dict) -> bool:
+    """Atomically mark a refresh token as used.
+
+    Returns False when the token was already consumed.
+    """
+    with _revoked_lock:
+        jti = payload["jti"]
+        if jti in _revoked_refresh_tokens:
+            return False
+        _revoked_refresh_tokens.add(jti)
+        return True
+
+
 def is_refresh_token_revoked(payload: dict) -> bool:
     with _revoked_lock:
         return payload.get("jti") in _revoked_refresh_tokens
@@ -108,6 +121,8 @@ def get_token_payload(request: Request) -> dict:
     payload = decode_token(token)
     if payload.get("type") != "access":
         raise AppError(401, "UNAUTHORIZED", "Wrong token type")
+    if not payload.get("jti"):
+        raise AppError(401, "UNAUTHORIZED", "Invalid token identifier")
     with _revoked_lock:
         is_revoked = payload.get("jti") in _revoked_tokens
     if is_revoked:

@@ -14,3 +14,5 @@ The following bugs from `issues.md` have been fixed:
    - **Resolution**: Protected user queries in `get_current_user` and `/refresh` from `ValueError`/`KeyError` when parsing token subjects, raising a clean `401` if malformed.
 6. **Concurrent Registration Can Raise a 500 Server Error**
    - **Resolution**: Caught database `IntegrityError` during register commits and raised `409 USERNAME_TAKEN`.
+7. **Tokens Without `jti` Can Bypass Revocation Rules**
+   - **Resolution**: Required access and refresh tokens to include a `jti` claim before protected-route access or refresh rotation. Refresh tokens are now consumed atomically so two simultaneous refresh attempts cannot both pass the single-use check.

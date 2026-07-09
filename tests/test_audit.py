@@ -174,6 +174,46 @@ def test_refresh_token_single_use():
     assert r3.status_code == 200
 
 
+def test_tokens_require_jti_claim():
+    org = "acme"
+    client.post("/auth/register", json={"org_name": org, "username": "alice", "password": "password"})
+    login = client.post("/auth/login", json={"org_name": org, "username": "alice", "password": "password"}).json()
+    user_id = jwt.decode(login["access_token"], JWT_SECRET, algorithms=[JWT_ALGORITHM])["sub"]
+    now = int(datetime.now(timezone.utc).timestamp())
+
+    access_without_jti = jwt.encode(
+        {
+            "sub": user_id,
+            "org": 1,
+            "role": "admin",
+            "iat": now,
+            "exp": now + 900,
+            "type": "access",
+        },
+        JWT_SECRET,
+        algorithm=JWT_ALGORITHM,
+    )
+    resp = client.get("/rooms", headers={"Authorization": f"Bearer {access_without_jti}"})
+    assert resp.status_code == 401
+    assert resp.json()["code"] == "UNAUTHORIZED"
+
+    refresh_without_jti = jwt.encode(
+        {
+            "sub": user_id,
+            "org": 1,
+            "role": "admin",
+            "iat": now,
+            "exp": now + 604800,
+            "type": "refresh",
+        },
+        JWT_SECRET,
+        algorithm=JWT_ALGORITHM,
+    )
+    resp = client.post("/auth/refresh", json={"refresh_token": refresh_without_jti})
+    assert resp.status_code == 401
+    assert resp.json()["code"] == "UNAUTHORIZED"
+
+
 def test_duplicate_registration_validation():
     org = "acme"
     r1 = client.post("/auth/register", json={"org_name": org, "username": "alice", "password": "password"})
